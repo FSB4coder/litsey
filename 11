@@ -1,0 +1,148 @@
+import sys
+from PyQt6 import uic
+from PyQt6.QtGui import QPixmap, QKeyEvent, QMouseEvent
+from PyQt6.QtWidgets import QApplication, QLabel, QMainWindow, QLineEdit, QPushButton, QTextEdit, QCheckBox
+import requests
+
+class MainWindow(QMainWindow):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        uic.loadUi('maaps.ui', self)
+
+        self.api_server = 'https://static-maps.yandex.ru/1.x/'
+        self.geocode_api = 'https://geocode-maps.yandex.ru/1.x/'
+        self.map_zoom = 10
+        self.delta = 0.1
+        self.map_ll = [37.621601, 55.753460]
+        self.map_type = 'map'
+        self.marker_coord = None
+        self.address_output = QTextEdit(self)
+        self.address_output.setGeometry(10, 50, 580, 30)
+        self.address_output.setReadOnly(True)
+        self.refresh_map()
+
+        self.search_input = QLineEdit(self)
+        self.search_input.setPlaceholderText("Введите название объекта...")
+        self.search_input.setGeometry(10, 10, 300, 30)
+        self.search_input.returnPressed.connect(self.search)
+
+        self.search_button = QPushButton("Искать", self)
+        self.search_button.setGeometry(320, 10, 80, 30)
+        self.search_button.clicked.connect(self.search)
+
+        self.reset_button = QPushButton("Сброс поискового результата", self)
+        self.reset_button.setGeometry(410, 10, 180, 30)
+        self.reset_button.clicked.connect(self.reset_marker)
+
+        self.checkbox = QCheckBox("Добавить почтовый индекс", self)
+        self.checkbox.setGeometry(10, 90, 200, 30)
+        self.checkbox.toggled.connect(self.update_address)
+
+        self.comboBox.currentIndexChanged.connect(self.change_map_type)
+
+    def search(self):
+        query = self.search_input.text()
+        if not query:
+            return
+        
+        geocode_params = {
+            'geocode': query,
+            'format': 'json'
+        }
+        response = requests.get(self.geocode_api, params=geocode_params)
+        if response.ok:
+            json_response = response.json()
+            if json_response['response']['GeoObjectCollection']['featureMember']:
+                coords = json_response['response']['GeoObjectCollection']['featureMember'][0]['GeoObject']['Point']['pos']
+                self.marker_coord = list(map(float, coords.split()))
+                self.map_ll = self.marker_coord
+                self.update_address()
+                self.refresh_map()
+            else:
+                print("Объект не найден.")
+        else:
+            print("Ошибка при выполнении запроса геокодирования.")
+
+    def update_address(self):
+        if self.marker_coord:
+            geocode_params = {
+                'geocode': ','.join(map(str, self.marker_coord)),
+                'format': 'json'
+            }
+            response = requests.get(self.geocode_api, params=geocode_params)
+            if response.ok:
+                json_response = response.json()
+                address = json_response['response']['GeoObjectCollection']['featureMember'][0]['GeoObject']['name']
+                if self.checkbox.isChecked():
+                    postal_code = json_response['response']['GeoObjectCollection']['featureMember'][0]['GeoObject']['metaDataProperty']['GeocoderMetaData']['Address']['postal_code']
+                    address += f", {postal_code}"
+                self.address_output.setPlainText(address)
+
+    def reset_marker(self):
+        self.marker_coord = None
+        self.address_output.clear()
+        self.map_ll = [37.621601, 55.753460]
+        self.checkbox.setChecked(False)
+        self.refresh_map()
+
+    def change_map_type(self):
+        map_type = self.comboBox.currentText()
+        if map_type == 'Светлая':
+            self.map_type = 'map'
+        elif map_type == 'Тёмная':
+            self.map_type = 'sat'
+        self.refresh_map()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key.Key_PageUp and self.map_zoom < 20:
+            self.map_zoom += 1
+        elif event.key() == Qt.Key.Key_PageDown and self.map_zoom > 0:
+            self.map_zoom -= 1
+        elif event.key() == Qt.Key.Key_Up:
+            self.map_ll[1] += self.delta
+        elif event.key() == Qt.Key.Key_Down:
+            self.map_ll[1] -= self.delta
+        elif event.key() == Qt.Key.Key_Left:
+            self.map_ll[0] -= self.delta
+        elif event.key() == Qt.Key.Key_Right:
+            self.map_ll[0] += self.delta
+        
+        self.refresh_map()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            x = event.pos().x()
+            y = event.pos().y()
+            map_width = self.label.width()
+            map_height = self.label.height()
+            ll_x = self.map_ll[0] - (self.map_zoom / 2) * self.delta
+            ll_y = self.map_ll[1] + (self.map_zoom / 2) * self.delta
+            self.marker_coord = [ll_x + (x / map_width) * self.delta * map_width, ll_y - (y / map_height) * self.delta * map_height]
+            self.update_address()
+            self.refresh_map()
+
+    def refresh_map(self):
+        map_params = {
+            'll': ','.join(map(str, self.map_ll)),
+            'l': self.map_type,
+            'z': self.map_zoom
+        }
+
+        if self.marker_coord:
+            map_params['pt'] = f"{self.marker_coord[0]},{self.marker_coord[1]},pm2rdm"
+
+        response = requests.get(self.api_server, params=map_params)
+        if not response:
+            print('Ошибка выполнения запроса:')
+            print('Https статус:', response.status_code, '(', response.reason, ')')
+            sys.exit(1)
+
+        pixmap = QPixmap()
+        pixmap.loadFromData(response.content)
+        self.label.setPixmap(pixmap)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    win = MainWindow()
+    win.show()
+    sys.exit(app.exec())
